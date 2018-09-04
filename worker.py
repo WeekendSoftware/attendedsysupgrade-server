@@ -1,5 +1,6 @@
 import threading
 import glob
+import paramiko
 import re
 from queue import Queue
 import shutil
@@ -53,6 +54,7 @@ class GarbageCollector(threading.Thread):
 class Worker(threading.Thread):
     def __init__(self, location, job, queue):
         self.location = location
+        self.local = True if self.location.startswith("/") else False
         self.queue = queue
         self.job = job
         threading.Thread.__init__(self)
@@ -136,79 +138,85 @@ class Worker(threading.Thread):
         # check if image already exists
         if not self.image.created():
             self.log.info("build image")
-            with tempfile.TemporaryDirectory(dir=self.config.get_folder("tempdir")) as build_dir:
-                # now actually build the image with manifest hash as EXTRA_IMAGE_NAME
-                self.params["worker"] = self.location
-                self.params["BIN_DIR"] = build_dir
-                self.params["j"] = str(os.cpu_count())
-                self.params["EXTRA_IMAGE_NAME"] = self.params["manifest_hash"]
-                # if uci defaults are added, at least at parts of the hash to time image name
-                if self.params["defaults_hash"]:
-                    defaults_dir = build_dir + "/files/etc/uci-defaults/"
-                    # create folder to store uci defaults
-                    os.makedirs(defaults_dir)
-                    # request defaults content from database
-                    defaults_content = self.database.get_defaults(self.params["defaults_hash"])
-                    with open(defaults_dir + "99-server-defaults", "w") as defaults_file:
-                        defaults_file.write(defaults_content) # TODO check if special encoding is required
 
-                    # tell ImageBuilder to integrate files
-                    self.params["FILES"] = build_dir + "/files/"
-                    self.params["EXTRA_IMAGE_NAME"] += "-" + self.params["defaults_hash"][:6]
+            build_dir = "/tmp/" + self.params["request_hash"]
 
-                # download is already performed for manifest creation
-                self.params["NO_DOWNLOAD"] = "1"
+            # now actually build the image with manifest hash as EXTRA_IMAGE_NAME
+            self.params["worker"] = self.location
+            self.params["BIN_DIR"] = build_dir
+            self.params["j"] = str(os.cpu_count())
+            self.params["EXTRA_IMAGE_NAME"] = self.params["manifest_hash"]
+            # if uci defaults are added, at least at parts of the hash to time image name
+            if self.params["defaults_hash"]:
+                defaults_dir = build_dir + "/files/etc/uci-defaults/"
+                # create folder to store uci defaults
+                os.makedirs(defaults_dir)
+                # request defaults content from database
+                defaults_content = self.database.get_defaults(self.params["defaults_hash"])
+                with open(defaults_dir + "99-server-defaults", "w") as defaults_file:
+                    defaults_file.write(defaults_content) # TODO check if special encoding is required
 
-                build_start = time.time()
-                return_code, buildlog, errors = self.run_meta("image")
-                self.image.params["build_seconds"] = int(time.time() - build_start)
+                # tell ImageBuilder to integrate files
+                self.params["FILES"] = build_dir + "/files/"
+                self.params["EXTRA_IMAGE_NAME"] += "-" + self.params["defaults_hash"][:6]
 
-                if return_code == 0:
-                    # create folder in advance
-                    os.makedirs(self.image.params["dir"], exist_ok=True)
+            # download is already performed for manifest creation
+            self.params["NO_DOWNLOAD"] = "1"
 
-                    self.log.debug(os.listdir(build_dir))
+            build_start = time.time()
+            return_code, buildlog, errors = self.run_meta("image")
+            self.image.params["build_seconds"] = int(time.time() - build_start)
 
-                    for filename in os.listdir(build_dir):
-                        if os.path.exists(self.image.params["dir"] + "/" + filename):
-                            break
-                        shutil.move(build_dir + "/" + filename, self.image.params["dir"])
+            if return_code == 0:
+                # create folder in advance
 
-                    # possible sysupgrade names, ordered by likeliness
-                    possible_sysupgrade_files = [ "*-squashfs-sysupgrade.bin",
-                            "*-squashfs-sysupgrade.tar", "*-squashfs.trx",
-                            "*-squashfs.chk", "*-squashfs.bin",
-                            "*-squashfs-sdcard.img.gz", "*-combined-squashfs*",
-                            "*.img.gz"]
+                if not self.local:
+                    self.copy_from_remote()
 
-                    sysupgrade = None
+                os.makedirs(self.image.params["dir"], exist_ok=True)
 
-                    for sysupgrade_file in possible_sysupgrade_files:
-                        sysupgrade = glob.glob(self.image.params["dir"] + "/" + sysupgrade_file)
-                        if sysupgrade:
-                            break
+                self.log.debug(os.listdir(build_dir))
 
-                    if not sysupgrade:
-                        self.log.debug("sysupgrade not found")
-                        if buildlog.find("too big") != -1:
-                            self.log.warning("created image was to big")
-                            self.database.set_image_requests_status(self.params["request_hash"], "imagesize_fail")
-                            self.write_log(fail_log_path, buildlog, errors)
-                            return False
-                        else:
-                            self.build_status = "no_sysupgrade"
-                            self.image.params["sysupgrade"] = ""
+                for filename in os.listdir(build_dir):
+                    if os.path.exists(self.image.params["dir"] + "/" + filename):
+                        break
+                    shutil.move(build_dir + "/" + filename, self.image.params["dir"])
+
+                # possible sysupgrade names, ordered by likeliness
+                possible_sysupgrade_files = [ "*-squashfs-sysupgrade.bin",
+                        "*-squashfs-sysupgrade.tar", "*-squashfs.trx",
+                        "*-squashfs.chk", "*-squashfs.bin",
+                        "*-squashfs-sdcard.img.gz", "*-combined-squashfs*",
+                        "*.img.gz"]
+
+                sysupgrade = None
+
+                for sysupgrade_file in possible_sysupgrade_files:
+                    sysupgrade = glob.glob(self.image.params["dir"] + "/" + sysupgrade_file)
+                    if sysupgrade:
+                        break
+
+                if not sysupgrade:
+                    self.log.debug("sysupgrade not found")
+                    if buildlog.find("too big") != -1:
+                        self.log.warning("created image was to big")
+                        self.database.set_image_requests_status(self.params["request_hash"], "imagesize_fail")
+                        self.write_log(fail_log_path, buildlog, errors)
+                        return False
                     else:
-                        self.image.params["sysupgrade"] = os.path.basename(sysupgrade[0])
-
-                    self.write_log(success_log_path, buildlog)
-                    self.database.add_image(self.image.get_params())
-                    self.log.info("build successfull")
+                        self.build_status = "no_sysupgrade"
+                        self.image.params["sysupgrade"] = ""
                 else:
-                    self.log.info("build failed")
-                    self.database.set_image_requests_status(self.params["request_hash"], 'build_fail')
-                    self.write_log(fail_log_path, buildlog, errors)
-                    return False
+                    self.image.params["sysupgrade"] = os.path.basename(sysupgrade[0])
+
+                self.write_log(success_log_path, buildlog)
+                self.database.add_image(self.image.get_params())
+                self.log.info("build successfull")
+            else:
+                self.log.info("build failed")
+                self.database.set_image_requests_status(self.params["request_hash"], 'build_fail')
+                self.write_log(fail_log_path, buildlog, errors)
+                return False
 
         self.log.info("link request %s to image %s", self.params["request_hash"], self.params["image_hash"])
         self.database.done_build_job(self.params["request_hash"], self.image.params["image_hash"], self.build_status)
@@ -240,6 +248,56 @@ class Worker(threading.Thread):
 
     def run_meta(self, cmd):
         cmdline = ["sh", "meta", cmd ]
+        if self.local:
+            return_code, stdout, stderr = self.run_local(cmdline)
+        else:
+            return_code, stdout, stderr = self.run_remote(cmdline)
+
+        output = stdout.decode('utf-8')
+        errors = stderr.decode('utf-8')
+
+        return (return_code, output, errors)
+
+    def copy_from_remote(self):
+        try:
+            t = paramiko.Transport((hostname, port))
+            t.connect(username=username, password=password)
+            sftp = paramiko.SFTPClient.from_transport(t)
+            sftp.get(source, dest)
+
+        finally:
+        t.close()
+
+
+    def ssh_login_data(self):
+        port = 22
+        username = "root"
+        hostname = self.location
+        if "@" in hostname:
+            username, hostname = hostname.split("@")
+
+        if ":" in hostname:
+            hostname, port = hostname.split(":")
+
+        return (username, hostname, port)
+
+    def run_remote(self, cmdline):
+        username, hostname, port = self.ssh_login_data()
+        try:
+            client = paramiko.SSHClient()
+            client.load_system_host_keys()
+            client.set_missing_host_key_policy(paramiko.WarningPolicy)
+            client.connect(hostname, port=port, username=username, password=password)
+
+            stdin, stdout, stderr = client.exec_command(command)
+
+        finally:
+            client.close()
+
+        return (0, stdout, stderr)
+
+    def run_local(self, cmdline):
+        cmdline = ["sh", "meta", cmd ]
         env = os.environ.copy()
 
         if "parent_version" in self.version_config:
@@ -259,13 +317,10 @@ class Worker(threading.Thread):
             env=env
         )
 
-        output, errors = proc.communicate()
+        stdout, stderr = proc.communicate()
         return_code = proc.returncode
-        output = output.decode('utf-8')
-        errors = errors.decode('utf-8')
 
-        return (return_code, output, errors)
-
+        return (return_code, stdout, stderr)
 
     def parse_info(self):
         self.log.debug("parse info")
