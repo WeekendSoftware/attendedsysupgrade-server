@@ -139,16 +139,17 @@ class Worker(threading.Thread):
         if not self.image.created():
             self.log.info("build image")
 
-            build_dir = "/tmp/" + self.params["request_hash"]
+            self.build_dir = "/tmp/" + self.params["request_hash"]
+            os.makedirs(self.build_dir)
 
             # now actually build the image with manifest hash as EXTRA_IMAGE_NAME
             self.params["worker"] = self.location
-            self.params["BIN_DIR"] = build_dir
+            self.params["BIN_DIR"] = self.build_dir
             self.params["j"] = str(os.cpu_count())
             self.params["EXTRA_IMAGE_NAME"] = self.params["manifest_hash"]
             # if uci defaults are added, at least at parts of the hash to time image name
             if self.params["defaults_hash"]:
-                defaults_dir = build_dir + "/files/etc/uci-defaults/"
+                defaults_dir = self.build_dir + "/files/etc/uci-defaults/"
                 # create folder to store uci defaults
                 os.makedirs(defaults_dir)
                 # request defaults content from database
@@ -157,7 +158,7 @@ class Worker(threading.Thread):
                     defaults_file.write(defaults_content) # TODO check if special encoding is required
 
                 # tell ImageBuilder to integrate files
-                self.params["FILES"] = build_dir + "/files/"
+                self.params["FILES"] = self.build_dir + "/files/"
                 self.params["EXTRA_IMAGE_NAME"] += "-" + self.params["defaults_hash"][:6]
 
             # download is already performed for manifest creation
@@ -175,12 +176,12 @@ class Worker(threading.Thread):
 
                 os.makedirs(self.image.params["dir"], exist_ok=True)
 
-                self.log.debug(os.listdir(build_dir))
+                self.log.debug(os.listdir(self.build_dir))
 
-                for filename in os.listdir(build_dir):
+                for filename in os.listdir(self.build_dir):
                     if os.path.exists(self.image.params["dir"] + "/" + filename):
                         break
-                    shutil.move(build_dir + "/" + filename, self.image.params["dir"])
+                    shutil.move(self.build_dir + "/" + filename, self.image.params["dir"])
 
                 # possible sysupgrade names, ordered by likeliness
                 possible_sysupgrade_files = [ "*-squashfs-sysupgrade.bin",
@@ -259,16 +260,16 @@ class Worker(threading.Thread):
         return (return_code, output, errors)
 
     def copy_from_remote(self):
+        username, hostname, port = self.ssh_login_data()
         try:
             t = paramiko.Transport((hostname, port))
-            t.connect(username=username, password=password)
+            t.connect(username=username)
             sftp = paramiko.SFTPClient.from_transport(t)
-            sftp.get(source, dest)
-
+            sftp.get(self.build_dir, self.image.params["dir"])
         finally:
-        t.close()
+            t.close()
 
-
+    # parses worker address, username and port
     def ssh_login_data(self):
         port = 22
         username = "root"
@@ -287,9 +288,9 @@ class Worker(threading.Thread):
             client = paramiko.SSHClient()
             client.load_system_host_keys()
             client.set_missing_host_key_policy(paramiko.WarningPolicy)
-            client.connect(hostname, port=port, username=username, password=password)
+            client.connect(hostname, port=port, username=username)
 
-            stdin, stdout, stderr = client.exec_command(command)
+            stdin, stdout, stderr = client.exec_command(command, environment=self.params)
 
         finally:
             client.close()
