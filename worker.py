@@ -55,6 +55,7 @@ class Worker(threading.Thread):
     def __init__(self, location, job, queue):
         self.location = location
         self.local = True if self.location.startswith("/") else False
+        self.sftp_setup() if not self.local
         self.queue = queue
         self.job = job
         threading.Thread.__init__(self)
@@ -149,13 +150,7 @@ class Worker(threading.Thread):
             self.params["EXTRA_IMAGE_NAME"] = self.params["manifest_hash"]
             # if uci defaults are added, at least at parts of the hash to time image name
             if self.params["defaults_hash"]:
-                defaults_dir = self.build_dir + "/files/etc/uci-defaults/"
-                # create folder to store uci defaults
-                os.makedirs(defaults_dir)
-                # request defaults content from database
-                defaults_content = self.database.get_defaults(self.params["defaults_hash"])
-                with open(defaults_dir + "99-server-defaults", "w") as defaults_file:
-                    defaults_file.write(defaults_content) # TODO check if special encoding is required
+                self.defaults_to_file()
 
                 # tell ImageBuilder to integrate files
                 self.params["FILES"] = self.build_dir + "/files/"
@@ -259,15 +254,30 @@ class Worker(threading.Thread):
 
         return (return_code, output, errors)
 
+    def defaults_to_file(self):
+        defaults_dir = self.build_dir + "/files/etc/uci-defaults/"
+        # request defaults content from database
+        defaults_content = self.database.get_defaults(self.params["defaults_hash"])
+        # create folder to store uci defaults
+        if self.local:
+            os.makedirs(defaults_dir)
+            with open(defaults_dir + "99-server-defaults", "w") as defaults_file:
+                defaults_file.write(defaults_content) # TODO check if special encoding is required
+        else:
+            self.sftp.mkdir(defaults_dir)
+            with self.sftp.open(defaults_dir + "99-server-defaults", "w") as defaults_file:
+                defaults_file.write(defaults_content) # TODO check if special encoding is required
+
+    def sftp_setup(self):
+        t = paramiko.Transport((hostname, port))
+        t.connect(username=username)
+        self.sftp = paramiko.SFTPClient.from_transport(t)
+
     def copy_from_remote(self):
         username, hostname, port = self.ssh_login_data()
-        try:
-            t = paramiko.Transport((hostname, port))
-            t.connect(username=username)
-            sftp = paramiko.SFTPClient.from_transport(t)
-            sftp.get(self.build_dir, self.image.params["dir"])
-        finally:
-            t.close()
+        for remote_file in self.sftp.listdir(self.build_dir):
+            self.sftp.get(self.build_dir + "/" + remote_file ,
+                    self.image.params["dir"])
 
     # parses worker address, username and port
     def ssh_login_data(self):
