@@ -54,8 +54,9 @@ class GarbageCollector(threading.Thread):
 class Worker(threading.Thread):
     def __init__(self, location, job, queue):
         self.location = location
-        self.local = True if self.location.startswith("/") else False
-        self.sftp_setup() if not self.local
+        if self.location.startswith("/"):
+            self.local = True
+            self.sftp_setup()
         self.queue = queue
         self.job = job
         threading.Thread.__init__(self)
