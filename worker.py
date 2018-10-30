@@ -56,6 +56,8 @@ class Worker(threading.Thread):
         self.location = location
         if self.location.startswith("/"):
             self.local = True
+        else:
+            self.local = False
             self.sftp_setup()
         self.queue = queue
         self.job = job
@@ -308,8 +310,8 @@ class Worker(threading.Thread):
 
         return (0, stdout, stderr)
 
-    def run_local(self, cmdline):
-        cmdline = ["sh", "meta", cmd ]
+    def run_local(self, cmd):
+        cmdline = ["sh", "meta", cmd]
         env = os.environ.copy()
 
         if "parent_version" in self.version_config:
