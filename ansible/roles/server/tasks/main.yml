@@ -17,7 +17,10 @@
 
 - pip:
     executable : pip3
-    name: pyodbc
+    name: "{{ item }}"
+  with_items:
+    - pyodbc
+    - paramiko
 
 - name: install imagebuilder dependencies
   package: name={{ item }} state=present
