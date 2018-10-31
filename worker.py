@@ -54,7 +54,7 @@ class GarbageCollector(threading.Thread):
 class Worker(threading.Thread):
     def __init__(self, location, job, queue):
         self.location = location
-        if self.location.startswith("/"):
+        if self.location.startswith("/") or self.location.startswith("."):
             self.local = True
         else:
             self.local = False
@@ -272,6 +272,7 @@ class Worker(threading.Thread):
                 defaults_file.write(defaults_content) # TODO check if special encoding is required
 
     def sftp_setup(self):
+        username, hostname, port = self.ssh_login_data()
         t = paramiko.Transport((hostname, port))
         t.connect(username=username)
         self.sftp = paramiko.SFTPClient.from_transport(t)
@@ -321,6 +322,8 @@ class Worker(threading.Thread):
 
         for key, value in self.params.items():
             env[key.upper()] = str(value) # TODO convert meta script to Makefile
+        
+        print(env)
 
         proc = subprocess.Popen(
             cmdline,
@@ -385,7 +388,7 @@ class Updater(threading.Thread):
         self.update_queue = Queue(1)
 
     def run(self):
-        location = self.config.get("updater_dir", "updater")
+        location = self.config.get("updater_dir", "./updater")
         Worker(location, None, None).setup_meta()
         workers = []
 
@@ -413,7 +416,7 @@ class Boss(threading.Thread):
 
     def run(self):
         workers = []
-        for worker_location in self.config.get("workers"):
+        for worker_location in self.config.get("worker", ["./worker"]):
             worker = Worker(worker_location, "image", self.build_queue)
             worker.start()
             workers.append(worker)
