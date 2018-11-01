@@ -413,7 +413,7 @@ class Boss(threading.Thread):
 
     def run(self):
         workers = []
-        for worker_location in self.config.get("worker", ["./worker"]):
+        for worker_location in self.config.get("workers", ["./worker"]):
             worker = Worker(worker_location, "image", self.build_queue)
             worker.start()
             workers.append(worker)
