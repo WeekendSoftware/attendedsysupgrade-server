@@ -311,8 +311,7 @@ class Worker(threading.Thread):
 
         return (0, stdout, stderr)
 
-    def run_local(self, cmd):
-        cmdline = ["sh", "meta", cmd]
+    def run_local(self, cmdline):
         env = os.environ.copy()
 
         if "parent_version" in self.version_config:
@@ -322,8 +321,6 @@ class Worker(threading.Thread):
 
         for key, value in self.params.items():
             env[key.upper()] = str(value) # TODO convert meta script to Makefile
-        
-        print(env)
 
         proc = subprocess.Popen(
             cmdline,
